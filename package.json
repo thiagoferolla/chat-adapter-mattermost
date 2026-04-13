@@ -1,0 +1,55 @@
+{
+	"name": "chat-adapter-mattermost",
+	"version": "1.0.0",
+	"description": "Mattermost adapter for Chat SDK",
+	"type": "module",
+	"main": "./dist/index.js",
+	"module": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"test": "echo \"Error: no test specified\" && exit 1"
+	},
+	"keywords": [
+		"chat-sdk",
+		"chat-adapter",
+		"mattermost"
+	],
+	"author": "Thiago Ferolla",
+	"license": "MIT",
+	"packageManager": "pnpm@10.10.0",
+	"peerDependencies": {
+		"chat": "^4.25.0"
+	},
+	"dependencies": {
+		"@chat-adapter/shared": "^4.25.0"
+	},
+	"devDependencies": {
+		"@chat-adapter/state-memory": "^4.25.0",
+		"@types/node": "^25.6.0",
+		"@vitest/coverage-v8": "^4.1.4",
+		"chat": "^4.25.0",
+		"tsup": "^8.5.1",
+		"typescript": "^6.0.2",
+		"vitest": "^4.1.4"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/rama-adi/chat-adapter-baileys"
+	},
+	"homepage": "https://github.com/rama-adi/chat-adapter-baileys#readme",
+	"bugs": {
+		"url": "https://github.com/rama-adi/chat-adapter-baileys/issues"
+	}
+}
