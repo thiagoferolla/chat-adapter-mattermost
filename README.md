@@ -47,26 +47,21 @@ bot.onNewMention(async (thread) => {
 
 The adapter connects to Mattermost over the REST API and the `/api/v4/websocket` gateway.
 
-## Planned Scope
+## Chat SDK Feature Support
 
-Current core support:
-
-- websocket-driven incoming message handling
-- incoming message parsing
-- thread ID encoding and decoding
-- posting top-level messages and threaded replies
-- editing and deleting posts
-- reactions
-- typing indicators
-- basic Markdown formatting
-- channel metadata and direct-message opening
-
-Likely follow-up work:
-
-- slash commands
-- ephemeral messages
-- richer formatting and cards where the platform allows it
-- adapter tests against Mattermost fixtures or a local Mattermost instance
+| Chat SDK feature | Support | Notes |
+| --- | --- | --- |
+| Overlapping Messages | ✅ | Stable thread IDs and `lockScope = "thread"` let Chat SDK concurrency strategies work as expected. |
+| Actions | ❌ | The adapter does not currently handle interactive button or select callbacks. |
+| Cards | 🟡 | Card payloads are accepted, but they are rendered as plain-text fallback content instead of native Mattermost interactive UI. |
+| Direct messages | ✅ | `openDM()` and `isDM()` are implemented for Mattermost direct-message threads. |
+| Emoji | ✅ | Outgoing emoji formatting plus add/remove reaction handling are implemented. |
+| Ephemeral messages | ✅ | Uses Mattermost's native `/posts/ephemeral` API. |
+| File uploads | 🟡 | Sending files and parsing incoming file attachments work, but editing a message with new uploads is not supported yet. |
+| Modals | ❌ | The adapter does not currently expose modal open or submit flows. |
+| Slash Commands | ❌ | No slash-command parsing or dispatch is implemented yet. |
+| Streaming | 🟡 | Chat SDK can fall back to post-and-edit streaming because message posting and editing are implemented, but there is no native streaming transport. |
+| Error handling | 🟡 | The adapter maps auth, permission, not-found, validation, and network failures, but it does not yet expose richer rate-limit handling. |
 
 ## What This Is Not
 
