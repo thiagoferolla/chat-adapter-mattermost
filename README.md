@@ -6,7 +6,7 @@ This project aims to make Mattermost feel like a first-class Chat SDK platform s
 
 ## Status
 
-Early-stage project. The repository is currently just the initial scaffold and documentation.
+Working community adapter with a Mattermost REST client, websocket listener, thread ID encoding, message parsing, message posting/editing/deletion, reactions, typing indicators, channel metadata, and DM opening.
 
 ## Goal
 
@@ -25,16 +25,19 @@ The target developer experience is something close to this:
 import { Chat } from "chat";
 import { createMattermostAdapter } from "chat-adapter-mattermost";
 
+const adapter = createMattermostAdapter({
+  baseUrl: process.env.MATTERMOST_BASE_URL!,
+  botToken: process.env.MATTERMOST_BOT_TOKEN!,
+});
+
 const bot = new Chat({
   userName: "my-bot",
   adapters: {
-    mattermost: createMattermostAdapter({
-      baseUrl: process.env.MATTERMOST_BASE_URL!,
-      botToken: process.env.MATTERMOST_BOT_TOKEN!,
-      signingSecret: process.env.MATTERMOST_SIGNING_SECRET!,
-    }),
+    mattermost: adapter,
   },
 });
+
+await bot.initialize();
 
 bot.onNewMention(async (thread) => {
   await thread.subscribe();
@@ -42,25 +45,25 @@ bot.onNewMention(async (thread) => {
 });
 ```
 
-The exact config and exported API may change as the adapter is implemented.
+The adapter connects to Mattermost over the REST API and the `/api/v4/websocket` gateway.
 
 ## Planned Scope
 
-Initial MVP:
+Current core support:
 
-- webhook and request verification
+- websocket-driven incoming message handling
 - incoming message parsing
 - thread ID encoding and decoding
-- mention detection
-- posting replies to threads
-- basic message formatting
+- posting top-level messages and threaded replies
+- editing and deleting posts
+- reactions
+- typing indicators
+- basic Markdown formatting
+- channel metadata and direct-message opening
 
 Likely follow-up work:
 
-- reactions
-- direct messages
 - slash commands
-- file uploads
 - ephemeral messages
 - richer formatting and cards where the platform allows it
 - adapter tests against Mattermost fixtures or a local Mattermost instance

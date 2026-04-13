@@ -16,7 +16,10 @@
 		"dist"
 	],
 	"scripts": {
-		"test": "echo \"Error: no test specified\" && exit 1"
+		"build": "tsup",
+		"test": "vitest run --coverage",
+		"test:watch": "vitest",
+		"typecheck": "tsc --noEmit"
 	},
 	"keywords": [
 		"chat-sdk",
