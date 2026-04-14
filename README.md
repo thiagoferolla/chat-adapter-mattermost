@@ -2,82 +2,93 @@
 
 Mattermost adapter for [Vercel Chat SDK](https://chat-sdk.dev/).
 
-This project aims to make Mattermost feel like a first-class Chat SDK platform so you can write bot logic once and run it inside Mattermost channels, threads, and direct messages.
+## Install
 
-## Status
+```bash
+pnpm add chat-adapter-mattermost chat
+```
 
-Working community adapter with a Mattermost REST client, websocket listener, thread ID encoding, message parsing, message posting/editing/deletion, reactions, typing indicators, channel metadata, and DM opening.
+Requires Node.js >= 20 and a Mattermost server with a bot account.
 
-## Goal
-
-Chat SDK provides a common adapter interface for chat platforms. This repository is intended to implement a **community adapter** for Mattermost that:
-
-- verifies and handles Mattermost webhooks and events
-- maps Mattermost messages, threads, channels, users, and reactions into Chat SDK primitives
-- lets Chat SDK handlers post replies, edit messages, and manage thread interactions through Mattermost APIs
-- keeps bot logic platform-agnostic so the same handlers can be reused across Slack, Discord, Mattermost, and other Chat SDK adapters
-
-## Intended API
-
-The target developer experience is something close to this:
+## Quick start
 
 ```ts
 import { Chat } from "chat";
 import { createMattermostAdapter } from "chat-adapter-mattermost";
 
 const adapter = createMattermostAdapter({
-  baseUrl: process.env.MATTERMOST_BASE_URL!,
-  botToken: process.env.MATTERMOST_BOT_TOKEN!,
+	baseUrl: process.env.MATTERMOST_BASE_URL!,
+	botToken: process.env.MATTERMOST_BOT_TOKEN!,
 });
 
 const bot = new Chat({
-  userName: "my-bot",
-  adapters: {
-    mattermost: adapter,
-  },
+	userName: "my-bot",
+	adapters: {
+		mattermost: adapter,
+	},
 });
 
 await bot.initialize();
 
 bot.onNewMention(async (thread) => {
-  await thread.subscribe();
-  await thread.post("Hello from Mattermost via Chat SDK.");
+	await thread.subscribe();
+	await thread.post("Hello from Mattermost via Chat SDK.");
 });
 ```
 
-The adapter connects to Mattermost over the REST API and the `/api/v4/websocket` gateway.
+Configuration can also be provided through environment variables:
 
-## Chat SDK Feature Support
+```bash
+export MATTERMOST_BASE_URL=https://mattermost.example.com
+export MATTERMOST_BOT_TOKEN=your-bot-token
+```
 
-| Chat SDK feature | Support | Notes |
-| --- | --- | --- |
-| Overlapping Messages | ✅ | Stable thread IDs and `lockScope = "thread"` let Chat SDK concurrency strategies work as expected. |
-| Actions | ❌ | The adapter does not currently handle interactive button or select callbacks. |
-| Cards | 🟡 | Card payloads are accepted, but they are rendered as plain-text fallback content instead of native Mattermost interactive UI. |
-| Direct messages | ✅ | `openDM()` and `isDM()` are implemented for Mattermost direct-message threads. |
-| Emoji | ✅ | Outgoing emoji formatting plus add/remove reaction handling are implemented. |
-| Ephemeral messages | ✅ | Uses Mattermost's native `/posts/ephemeral` API. |
-| File uploads | 🟡 | Sending files and parsing incoming file attachments work, but editing a message with new uploads is not supported yet. |
-| Modals | ❌ | The adapter does not currently expose modal open or submit flows. |
-| Slash Commands | ❌ | No slash-command parsing or dispatch is implemented yet. |
-| Streaming | 🟡 | Chat SDK can fall back to post-and-edit streaming because message posting and editing are implemented, but there is no native streaming transport. |
-| Error handling | 🟡 | The adapter maps auth, permission, not-found, validation, and network failures, but it does not yet expose richer rate-limit handling. |
+```ts
+const adapter = createMattermostAdapter();
+```
 
-## What This Is Not
+## Mattermost setup
 
-- not a Mattermost server plugin
-- not a replacement for Chat SDK itself
-- not a full bot framework on its own
+1. **Create a bot account** -- In Mattermost, go to **System Console > Integrations > Bot Accounts** and create a new bot. Copy the generated access token.
 
-This repository is specifically about the adapter layer between Mattermost and Chat SDK.
+2. **Enable integrations** -- Make sure your Mattermost server allows bot accounts and has the REST API and WebSocket gateway accessible. These are enabled by default.
 
-## Packaging Note
+3. **Add the bot to channels** -- Add the bot user to any channels where it should respond. The bot will only receive events from channels it is a member of.
 
-Per the Chat SDK adapter guidelines, the `@chat-adapter/*` npm scope is reserved for official adapters. If this project is published independently, it should remain a community package name such as `chat-adapter-mattermost` or another non-reserved scope.
+4. **Interactive actions (optional)** -- To use buttons and selects, set `callbackUrl` to a public URL that Mattermost can reach. The adapter exposes `handleWebhook()` for this purpose:
 
-## References
+    ```ts
+    adapter.handleWebhook(request);
+    ```
 
-- Chat SDK: https://chat-sdk.dev/
-- Chat SDK adapters: https://chat-sdk.dev/adapters
-- Building a community adapter: https://chat-sdk.dev/docs/contributing/building
-- Mattermost developer documentation: https://developers.mattermost.com/
+    Register this URL in **System Console > Integrations > Interactive Dialogs** or per-post via the `integration` field.
+
+## Feature Support
+
+| Feature              | Status | Notes                                                                                                            |
+| -------------------- | :----: | ---------------------------------------------------------------------------------------------------------------- |
+| Message posting      |   ✅   | Post, edit, and delete messages in channels and threads.                                                         |
+| Overlapping messages |   ✅   | Stable thread IDs and `lockScope = "thread"` let Chat SDK concurrency strategies work as expected.               |
+| Direct messages      |   ✅   | `openDM()` and `isDM()` are implemented.                                                                         |
+| Emoji / Reactions    |   ✅   | Outgoing emoji formatting plus add/remove reaction handling.                                                     |
+| Ephemeral messages   |   ✅   | Uses Mattermost's native `/posts/ephemeral` API.                                                                 |
+| Typing indicators    |   ✅   | `startTyping()` sends Mattermost typing events.                                                                  |
+| File uploads         |   🟡   | Sending and receiving file attachments work, but editing a message with new uploads is not supported.            |
+| Cards                |   🟡   | Card payloads are rendered as plain-text fallback with interactive action attachments when `callbackUrl` is set. |
+| Streaming            |   🟡   | Falls back to post-and-edit streaming. No native streaming transport.                                            |
+| Error handling       |   🟡   | Maps auth, permission, not-found, and network failures. Rate-limit handling is not yet exposed.                  |
+| Actions              |   ❌   | Interactive button and select callbacks are handled, but the full action lifecycle is not complete.              |
+| Modals               |   ❌   | No modal open or submit flows.                                                                                   |
+| Slash commands       |   ❌   | No slash-command parsing or dispatch.                                                                            |
+
+## Notes
+
+- The adapter connects to Mattermost over the REST API v4 and the `/api/v4/websocket` gateway.
+- Thread IDs are encoded as `mattermost:<base64url(channelId)>` for channel-level contexts or `mattermost:<base64url(channelId)>:<base64url(rootPostId)>` for threaded replies.
+- User and channel data are cached in-memory with LRU eviction (up to 1000 entries each).
+- WebSocket reconnection uses exponential backoff with jitter (1 s base, 30 s max).
+- This is a community adapter. The `@chat-adapter/*` npm scope is reserved for official adapters; this package is published as `chat-adapter-mattermost`.
+
+## License
+
+[MIT](LICENSE) © Thiago Ferolla
