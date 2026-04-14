@@ -59,9 +59,7 @@ const MAX_CHANNEL_PAGE_SIZE = 200;
 const MAX_USER_CACHE_SIZE = 1000;
 const MAX_CHANNEL_CACHE_SIZE = 1000;
 
-export class MattermostAdapter
-	implements Adapter<MattermostThreadId, MattermostPost>
-{
+export class MattermostAdapter implements Adapter<MattermostThreadId, MattermostPost> {
 	readonly lockScope = "thread" as const;
 	readonly name = ADAPTER_NAME;
 
@@ -136,17 +134,12 @@ export class MattermostAdapter
 		const parts = threadId.split(":");
 
 		if (parts.length < 2 || parts.length > 3 || parts[0] !== ADAPTER_NAME) {
-			throw new ValidationError(
-				ADAPTER_NAME,
-				`Invalid Mattermost thread ID: ${threadId}`,
-			);
+			throw new ValidationError(ADAPTER_NAME, `Invalid Mattermost thread ID: ${threadId}`);
 		}
 
 		return {
 			channelId: Buffer.from(parts[1], "base64url").toString(),
-			rootPostId: parts[2]
-				? Buffer.from(parts[2], "base64url").toString()
-				: undefined,
+			rootPostId: parts[2] ? Buffer.from(parts[2], "base64url").toString() : undefined,
 		};
 	}
 
@@ -176,10 +169,7 @@ export class MattermostAdapter
 		}
 	}
 
-	async handleWebhook(
-		request: Request,
-		options?: WebhookOptions,
-	): Promise<Response> {
+	async handleWebhook(request: Request, options?: WebhookOptions): Promise<Response> {
 		if (!this.chat) {
 			return new Response("OK", { status: 200 });
 		}
@@ -447,18 +437,14 @@ export class MattermostAdapter
 	}
 
 	getChannelVisibility(threadId: string): ChannelVisibility {
-		const channel = this.getCachedValue(
-			this.channels,
-			this.channelIdFromThreadId(threadId),
-		);
+		const channel = this.getCachedValue(this.channels, this.channelIdFromThreadId(threadId));
 
 		return this.visibilityForChannelType(channel?.type);
 	}
 
 	isDM(threadId: string): boolean {
 		return (
-			this.getCachedValue(this.channels, this.channelIdFromThreadId(threadId))?.type ===
-			"D"
+			this.getCachedValue(this.channels, this.channelIdFromThreadId(threadId))?.type === "D"
 		);
 	}
 
@@ -760,14 +746,8 @@ export class MattermostAdapter
 		});
 	}
 
-	private authorFromUser(
-		user: MattermostUser | undefined,
-		fallbackUserId: string,
-	): Author {
-		const fullName = [user?.first_name, user?.last_name]
-			.filter(Boolean)
-			.join(" ")
-			.trim();
+	private authorFromUser(user: MattermostUser | undefined, fallbackUserId: string): Author {
+		const fullName = [user?.first_name, user?.last_name].filter(Boolean).join(" ").trim();
 		const isBot: boolean | "unknown" = user?.is_bot ?? "unknown";
 
 		return {
@@ -953,7 +933,10 @@ export class MattermostAdapter
 			let authenticated = false;
 			const authTimeout = setTimeout(() => {
 				finishReject(
-					new NetworkError(ADAPTER_NAME, "Mattermost websocket authentication timed out."),
+					new NetworkError(
+						ADAPTER_NAME,
+						"Mattermost websocket authentication timed out.",
+					),
 				);
 			}, 10000);
 
@@ -978,7 +961,10 @@ export class MattermostAdapter
 					this.websocket = null;
 					this.connectPromise = null;
 				}
-				if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+				if (
+					socket.readyState === WebSocket.OPEN ||
+					socket.readyState === WebSocket.CONNECTING
+				) {
 					socket.close();
 				}
 				reject(error);
@@ -1012,7 +998,10 @@ export class MattermostAdapter
 					}
 
 					finishReject(
-						this.toWebSocketError(payload, "Mattermost websocket authentication failed."),
+						this.toWebSocketError(
+							payload,
+							"Mattermost websocket authentication failed.",
+						),
 					);
 					return;
 				}
@@ -1128,9 +1117,7 @@ export class MattermostAdapter
 		);
 	}
 
-	private async handleWebSocketPayload(
-		payload: MattermostWebSocketEvent,
-	): Promise<void> {
+	private async handleWebSocketPayload(payload: MattermostWebSocketEvent): Promise<void> {
 		switch (payload.event) {
 			case "posted":
 			case "post_edited":
@@ -1207,19 +1194,20 @@ export class MattermostAdapter
 		);
 	}
 
-	private async handlePostDeletedEvent(
-		payload: MattermostWebSocketEvent,
-	): Promise<void> {
+	private async handlePostDeletedEvent(payload: MattermostWebSocketEvent): Promise<void> {
 		const post = this.parseEmbeddedJson<MattermostPost>(payload.data?.post);
 
 		if (!post) {
 			return;
 		}
 
-		this.logger.debug("Ignoring Mattermost post_deleted event; Chat SDK has no delete handler", {
-			messageId: post.id,
-			threadId: this.threadIdForPost(post),
-		});
+		this.logger.debug(
+			"Ignoring Mattermost post_deleted event; Chat SDK has no delete handler",
+			{
+				messageId: post.id,
+				threadId: this.threadIdForPost(post),
+			},
+		);
 	}
 
 	private async handleReactionEvent(
@@ -1246,9 +1234,9 @@ export class MattermostAdapter
 		const threadId = post
 			? this.threadIdForPost(post)
 			: this.encodeThreadId({
-				channelId: payload.broadcast?.channel_id ?? "unknown",
-				rootPostId: reaction.post_id,
-			});
+					channelId: payload.broadcast?.channel_id ?? "unknown",
+					rootPostId: reaction.post_id,
+				});
 		const [user, message] = await Promise.all([
 			this.getUser(reaction.user_id).catch(() => undefined),
 			post ? this.buildMessage(post) : Promise.resolve(undefined),
@@ -1319,9 +1307,7 @@ export class MattermostAdapter
 		return value.replace(/^:|:$/g, "");
 	}
 
-	private visibilityForChannelType(
-		channelType?: MattermostChannelType,
-	): ChannelVisibility {
+	private visibilityForChannelType(channelType?: MattermostChannelType): ChannelVisibility {
 		if (channelType === "O") {
 			return "workspace";
 		}
@@ -1407,9 +1393,7 @@ export class MattermostAdapter
 	}
 
 	private async toApiError(response: Response, path: string): Promise<Error> {
-		const errorBody = (await response
-			.json()
-			.catch(() => null)) as MattermostApiError | null;
+		const errorBody = (await response.json().catch(() => null)) as MattermostApiError | null;
 		const message =
 			errorBody?.message ||
 			errorBody?.detailed_error ||
@@ -1427,12 +1411,8 @@ export class MattermostAdapter
 		}
 	}
 
-	private toWebSocketError(
-		payload: MattermostWebSocketEvent,
-		fallbackMessage: string,
-	): Error {
-		const message =
-			payload.error?.message || payload.error?.detailed_error || fallbackMessage;
+	private toWebSocketError(payload: MattermostWebSocketEvent, fallbackMessage: string): Error {
+		const message = payload.error?.message || payload.error?.detailed_error || fallbackMessage;
 
 		if (payload.error?.status_code === 401) {
 			return new AuthenticationError(ADAPTER_NAME, message);
@@ -1468,10 +1448,7 @@ export class MattermostAdapter
 		const page = Number(cursor);
 
 		if (!Number.isInteger(page) || page < 0) {
-			throw new ValidationError(
-				ADAPTER_NAME,
-				`Invalid Mattermost page cursor: ${cursor}`,
-			);
+			throw new ValidationError(ADAPTER_NAME, `Invalid Mattermost page cursor: ${cursor}`);
 		}
 
 		return page;
@@ -1496,10 +1473,7 @@ export class MattermostAdapter
 		return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 	}
 
-	private getCachedValue<TKey, TValue>(
-		cache: Map<TKey, TValue>,
-		key: TKey,
-	): TValue | undefined {
+	private getCachedValue<TKey, TValue>(cache: Map<TKey, TValue>, key: TKey): TValue | undefined {
 		const value = cache.get(key);
 
 		if (value === undefined) {
