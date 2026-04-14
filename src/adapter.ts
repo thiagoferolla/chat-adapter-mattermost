@@ -20,6 +20,13 @@ import {
 	type ThreadInfo,
 	type WebhookOptions,
 } from "chat";
+import type {
+	ActionsElement,
+	ButtonElement,
+	CardElement,
+	SelectElement,
+	RadioSelectElement,
+} from "chat";
 import {
 	AuthenticationError,
 	NetworkError,
@@ -170,9 +177,27 @@ export class MattermostAdapter
 	}
 
 	async handleWebhook(
-		_request: Request,
-		_options?: WebhookOptions,
+		request: Request,
+		options?: WebhookOptions,
 	): Promise<Response> {
+		if (!this.chat) {
+			return new Response("OK", { status: 200 });
+		}
+
+		let body: Record<string, unknown>;
+
+		try {
+			body = (await request.json()) as Record<string, unknown>;
+		} catch {
+			return new Response("OK", { status: 200 });
+		}
+
+		const context = body.context as Record<string, unknown> | undefined;
+
+		if (context?.action_id) {
+			await this.handleActionCallback(body, options);
+		}
+
 		return new Response("OK", { status: 200 });
 	}
 
@@ -267,13 +292,23 @@ export class MattermostAdapter
 
 		const existing = await this.getPost(messageId);
 		const text = this.renderPostableText(message);
+		const card = extractCard(message);
+		const putBody: Record<string, unknown> = {
+			...existing,
+			channel_id: decoded.channelId,
+			message: text,
+		};
+
+		if (card && this.config.callbackUrl) {
+			putBody.props = {
+				...existing.props,
+				attachments: this.renderCardAttachments(card),
+			};
+		}
+
 		const updated = await this.api<MattermostPost>(`/posts/${messageId}`, {
 			method: "PUT",
-			body: JSON.stringify({
-				...existing,
-				channel_id: decoded.channelId,
-				message: text,
-			}),
+			body: JSON.stringify(putBody),
 		});
 
 		return {
@@ -491,6 +526,7 @@ export class MattermostAdapter
 		rootPostId?: string,
 	): Promise<MattermostCreatePostRequest> {
 		const fileIds = await this.uploadFiles(channelId, message);
+		const card = extractCard(message);
 		const payload: MattermostCreatePostRequest = {
 			channel_id: channelId,
 			message: this.renderPostableText(message),
@@ -502,6 +538,13 @@ export class MattermostAdapter
 
 		if (fileIds.length > 0) {
 			payload.file_ids = fileIds;
+		}
+
+		if (card && this.config.callbackUrl) {
+			payload.props = {
+				...payload.props,
+				attachments: this.renderCardAttachments(card),
+			};
 		}
 
 		return payload;
@@ -519,6 +562,155 @@ export class MattermostAdapter
 		}
 
 		return this.converter.renderPostable(message);
+	}
+
+	private renderCardAttachments(card: CardElement): Record<string, unknown>[] {
+		const actions = this.extractActionsFromCard(card);
+		const attachment: Record<string, unknown> = {};
+
+		if (card.title) {
+			attachment.title = card.title;
+		}
+
+		if (card.subtitle) {
+			attachment.pretext = card.subtitle;
+		}
+
+		const textParts: string[] = [];
+
+		for (const child of card.children) {
+			if (child.type === "text") {
+				const content = child.content?.trim();
+				if (content) {
+					textParts.push(child.style === "bold" ? `**${content}**` : content);
+				}
+			}
+		}
+
+		if (textParts.length > 0) {
+			attachment.text = textParts.join("\n");
+		}
+
+		if (card.imageUrl) {
+			attachment.image_url = card.imageUrl;
+		}
+
+		if (actions.length > 0) {
+			attachment.actions = actions;
+		}
+
+		return [attachment];
+	}
+
+	private extractActionsFromCard(card: CardElement): Record<string, unknown>[] {
+		const actions: Record<string, unknown>[] = [];
+
+		for (const child of card.children) {
+			if (child.type === "actions") {
+				actions.push(...this.convertActionsElement(child));
+			}
+		}
+
+		return actions;
+	}
+
+	private convertActionsElement(element: ActionsElement): Record<string, unknown>[] {
+		const results: Record<string, unknown>[] = [];
+
+		for (const child of element.children) {
+			if (child.type === "button") {
+				results.push(this.convertButtonElement(child));
+			} else if (child.type === "select") {
+				results.push(this.convertSelectElement(child));
+			} else if (child.type === "radio_select") {
+				results.push(...this.convertRadioSelectElement(child));
+			}
+		}
+
+		return results;
+	}
+
+	private convertButtonElement(button: ButtonElement): Record<string, unknown> {
+		const action: Record<string, unknown> = {
+			id: button.id,
+			name: button.label,
+			type: "button",
+		};
+
+		if (button.style) {
+			action.style = this.mapButtonStyle(button.style);
+		}
+
+		if (this.config.callbackUrl) {
+			const context: Record<string, unknown> = {
+				action_id: button.id,
+			};
+			if (button.value) {
+				context.action_value = button.value;
+			}
+			action.integration = {
+				url: this.config.callbackUrl,
+				context,
+			};
+		}
+
+		return action;
+	}
+
+	private convertSelectElement(select: SelectElement): Record<string, unknown> {
+		const action: Record<string, unknown> = {
+			id: select.id,
+			name: select.placeholder ?? select.label,
+			type: "select",
+			options: select.options.map((opt) => ({
+				text: opt.label,
+				value: opt.value,
+			})),
+		};
+
+		if (this.config.callbackUrl) {
+			action.integration = {
+				url: this.config.callbackUrl,
+				context: {
+					action_id: select.id,
+				},
+			};
+		}
+
+		return action;
+	}
+
+	private convertRadioSelectElement(radio: RadioSelectElement): Record<string, unknown>[] {
+		return radio.options.map((opt) => {
+			const action: Record<string, unknown> = {
+				id: `${radio.id}_${opt.value}`,
+				name: opt.label,
+				type: "button",
+			};
+
+			if (this.config.callbackUrl) {
+				action.integration = {
+					url: this.config.callbackUrl,
+					context: {
+						action_id: radio.id,
+						action_value: opt.value,
+					},
+				};
+			}
+
+			return action;
+		});
+	}
+
+	private mapButtonStyle(style: string): string {
+		switch (style) {
+			case "primary":
+				return "primary";
+			case "danger":
+				return "danger";
+			default:
+				return "default";
+		}
 	}
 
 	private async uploadFiles(
@@ -877,6 +1069,63 @@ export class MattermostAdapter
 				this.scheduleReconnect();
 			});
 		}, delay);
+	}
+
+	private async handleActionCallback(
+		body: Record<string, unknown>,
+		options?: WebhookOptions,
+	): Promise<void> {
+		if (!this.chat) {
+			return;
+		}
+
+		const rawContext = body.context;
+		const context =
+			rawContext && typeof rawContext === "object"
+				? (rawContext as Record<string, unknown>)
+				: {};
+
+		const actionId = context.action_id as string;
+
+		if (!actionId) {
+			return;
+		}
+
+		const actionValue =
+			(context.action_value as string | undefined) ??
+			(context.selected_option as string | undefined);
+		const userId = body.user_id as string;
+		const postId = body.post_id as string;
+		const channelId = body.channel_id as string;
+
+		let threadId: string;
+
+		if (postId) {
+			const post = await this.getPost(postId).catch(() => undefined);
+
+			if (post) {
+				threadId = this.threadIdForPost(post);
+			} else {
+				threadId = this.encodeThreadId({ channelId });
+			}
+		} else {
+			threadId = this.encodeThreadId({ channelId });
+		}
+
+		const user = await this.getUser(userId).catch(() => undefined);
+
+		await this.chat.processAction(
+			{
+				actionId,
+				adapter: this,
+				messageId: postId ?? "",
+				raw: body,
+				threadId,
+				user: this.authorFromUser(user, userId),
+				value: actionValue,
+			},
+			options,
+		);
 	}
 
 	private async handleWebSocketPayload(

@@ -5,6 +5,12 @@ export interface MattermostAdapterConfig {
 	baseUrl: string;
 	/** Bot access token used for REST API and websocket authentication */
 	botToken: string;
+	/**
+	 * Public URL where Mattermost can send interactive action callbacks.
+	 * This is the URL of the webhook route in your HTTP server (e.g. https://my-bot.example.com/webhooks/mattermost),
+	 * not the Mattermost server URL. Required for interactive buttons and selects.
+	 */
+	callbackUrl?: string;
 	/** Optional logger used before Chat injects its own logger */
 	logger?: Logger;
 	/** Optional bot username override until /users/me resolves */
