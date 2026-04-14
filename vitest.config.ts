@@ -9,6 +9,12 @@ export default defineProject({
 			reporter: ["text", "json-summary"],
 			include: ["src/**/*.ts"],
 			exclude: ["src/**/*.test.ts"],
+			thresholds: {
+				lines: 40,
+				branches: 35,
+				functions: 35,
+				statements: 40,
+			},
 		},
 	},
 });

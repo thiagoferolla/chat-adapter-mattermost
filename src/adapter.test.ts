@@ -214,7 +214,11 @@ describe("MattermostAdapter actions - card rendering", () => {
 			vi.fn().mockResolvedValue(
 				new Response(
 					JSON.stringify(
-						createPost({ id: "new-post-1", channel_id: "channel-1", root_id: "root-1" }),
+						createPost({
+							id: "new-post-1",
+							channel_id: "channel-1",
+							root_id: "root-1",
+						}),
 					),
 					{ status: 201, headers: { "Content-Type": "application/json" } },
 				),
@@ -280,12 +284,14 @@ describe("MattermostAdapter actions - card rendering", () => {
 
 		vi.stubGlobal(
 			"fetch",
-			vi.fn().mockResolvedValue(
-				new Response(
-					JSON.stringify(createPost({ id: "new-post-2", channel_id: "channel-1" })),
-					{ status: 201, headers: { "Content-Type": "application/json" } },
+			vi
+				.fn()
+				.mockResolvedValue(
+					new Response(
+						JSON.stringify(createPost({ id: "new-post-2", channel_id: "channel-1" })),
+						{ status: 201, headers: { "Content-Type": "application/json" } },
+					),
 				),
-			),
 		);
 
 		await adapter.postMessage(threadId, { card });
@@ -335,12 +341,14 @@ describe("MattermostAdapter actions - card rendering", () => {
 
 		vi.stubGlobal(
 			"fetch",
-			vi.fn().mockResolvedValue(
-				new Response(
-					JSON.stringify(createPost({ id: "new-post-3", channel_id: "channel-1" })),
-					{ status: 201, headers: { "Content-Type": "application/json" } },
+			vi
+				.fn()
+				.mockResolvedValue(
+					new Response(
+						JSON.stringify(createPost({ id: "new-post-3", channel_id: "channel-1" })),
+						{ status: 201, headers: { "Content-Type": "application/json" } },
+					),
 				),
-			),
 		);
 
 		await adapter.postMessage(threadId, { card });
@@ -379,21 +387,21 @@ describe("MattermostAdapter actions - card rendering", () => {
 			children: [
 				{
 					type: "actions" as const,
-					children: [
-						{ type: "button" as const, id: "ok", label: "OK" },
-					],
+					children: [{ type: "button" as const, id: "ok", label: "OK" }],
 				},
 			],
 		};
 
 		vi.stubGlobal(
 			"fetch",
-			vi.fn().mockResolvedValue(
-				new Response(
-					JSON.stringify(createPost({ id: "new-post-4", channel_id: "channel-1" })),
-					{ status: 201, headers: { "Content-Type": "application/json" } },
+			vi
+				.fn()
+				.mockResolvedValue(
+					new Response(
+						JSON.stringify(createPost({ id: "new-post-4", channel_id: "channel-1" })),
+						{ status: 201, headers: { "Content-Type": "application/json" } },
+					),
 				),
-			),
 		);
 
 		await adapter.postMessage(threadId, { card });
@@ -427,12 +435,14 @@ describe("MattermostAdapter actions - card rendering", () => {
 
 		vi.stubGlobal(
 			"fetch",
-			vi.fn().mockResolvedValue(
-				new Response(
-					JSON.stringify(createPost({ id: "new-post-5", channel_id: "channel-1" })),
-					{ status: 201, headers: { "Content-Type": "application/json" } },
+			vi
+				.fn()
+				.mockResolvedValue(
+					new Response(
+						JSON.stringify(createPost({ id: "new-post-5", channel_id: "channel-1" })),
+						{ status: 201, headers: { "Content-Type": "application/json" } },
+					),
 				),
-			),
 		);
 
 		await adapter.postMessage(threadId, { card });
@@ -465,7 +475,13 @@ describe("MattermostAdapter actions - webhook handling", () => {
 			"fetch",
 			vi.fn().mockResolvedValue(
 				new Response(
-					JSON.stringify(createPost({ id: "post-1", channel_id: "channel-1", root_id: "root-1" })),
+					JSON.stringify(
+						createPost({
+							id: "post-1",
+							channel_id: "channel-1",
+							root_id: "root-1",
+						}),
+					),
 					{ status: 200, headers: { "Content-Type": "application/json" } },
 				),
 			),
@@ -512,12 +528,14 @@ describe("MattermostAdapter actions - webhook handling", () => {
 
 		vi.stubGlobal(
 			"fetch",
-			vi.fn().mockResolvedValue(
-				new Response(
-					JSON.stringify(createPost({ id: "post-2", channel_id: "channel-1" })),
-					{ status: 200, headers: { "Content-Type": "application/json" } },
+			vi
+				.fn()
+				.mockResolvedValue(
+					new Response(
+						JSON.stringify(createPost({ id: "post-2", channel_id: "channel-1" })),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					),
 				),
-			),
 		);
 
 		await adapter.handleWebhook(
@@ -608,7 +626,12 @@ describe("MattermostAdapter actions - edit with attachments", () => {
 				{
 					type: "actions" as const,
 					children: [
-						{ type: "button" as const, id: "done", label: "Done", style: "primary" as const },
+						{
+							type: "button" as const,
+							id: "done",
+							label: "Done",
+							style: "primary" as const,
+						},
 					],
 				},
 			],

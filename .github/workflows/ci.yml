@@ -1,20 +1,17 @@
-name: Publish to NPM
+name: CI
 
 on:
     push:
         branches: [main]
-
-concurrency: ${{ github.workflow }}-${{ github.ref }}
+    pull_request:
+        branches: [main]
 
 permissions:
-    contents: write
-    pull-requests: write
-    id-token: write
+    contents: read
 
 jobs:
-    publish:
+    check:
         runs-on: ubuntu-latest
-        environment: publish
 
         steps:
             - name: Checkout
@@ -30,7 +27,6 @@ jobs:
               with:
                   node-version: 24
                   cache: pnpm
-                  registry-url: https://registry.npmjs.org
 
             - name: Install dependencies
               run: pnpm install --frozen-lockfile
@@ -41,19 +37,11 @@ jobs:
             - name: Lint
               run: pnpm lint
 
+            - name: Format check
+              run: pnpm format:check
+
             - name: Test
               run: pnpm test
 
             - name: Build
               run: pnpm build
-
-            - name: Create Release Pull Request or Publish
-              id: changesets
-              uses: changesets/action@v1
-              with:
-                  publish: pnpm changeset publish
-                  version: pnpm changeset version
-                  title: "chore: version packages"
-                  commit: "chore: version packages"
-              env:
-                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
