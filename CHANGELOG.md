@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.3
+
+### Patch Changes
+
+- [#13](https://github.com/thiagoferolla/chat-adapter-mattermost/pull/13) [`45e6c2c`](https://github.com/thiagoferolla/chat-adapter-mattermost/commit/45e6c2c1153b1f243b78c858eb87a37471930095) Thanks [@thiagoferolla](https://github.com/thiagoferolla)! - Update Chat SDK peer and adapter types to match Chat SDK 4.29.0.
+
 All notable changes to this project will be documented in this file. See [CONTRIBUTING.md](CONTRIBUTING.md) for instructions on how to add a changeset.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/) and this project adheres to [Semantic Versioning](https://semver.org/).
