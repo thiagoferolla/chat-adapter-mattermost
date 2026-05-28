@@ -18,6 +18,7 @@ import {
 	type Logger,
 	type RawMessage,
 	type ThreadInfo,
+	type UserInfo,
 	type WebhookOptions,
 } from "chat";
 import type {
@@ -436,6 +437,18 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 		};
 	}
 
+	async getUser(userId: string): Promise<UserInfo | null> {
+		try {
+			return this.userInfoFromUser(await this.getMattermostUser(userId));
+		} catch (error) {
+			if (error instanceof ResourceNotFoundError) {
+				return null;
+			}
+
+			throw error;
+		}
+	}
+
 	getChannelVisibility(threadId: string): ChannelVisibility {
 		const channel = this.getCachedValue(this.channels, this.channelIdFromThreadId(threadId));
 
@@ -479,7 +492,7 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 		post: MattermostPost,
 		isMention = this.detectMention(post),
 	): Promise<Message<MattermostPost>> {
-		const user = await this.getUser(post.user_id).catch(() => undefined);
+		const user = await this.getMattermostUser(post.user_id).catch(() => undefined);
 
 		return this.messageFromPost(post, user, isMention);
 	}
@@ -759,6 +772,17 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 		};
 	}
 
+	private userInfoFromUser(user: MattermostUser): UserInfo {
+		const fullName = [user.first_name, user.last_name].filter(Boolean).join(" ").trim();
+
+		return {
+			userId: user.id,
+			userName: user.username,
+			fullName: fullName || user.nickname || user.username || user.id,
+			isBot: user.is_bot ?? false,
+		};
+	}
+
 	private detectMention(post: MattermostPost, mentions?: unknown): boolean {
 		const botUserId = this.botUserId;
 		const botUserName = this.userName;
@@ -893,7 +917,7 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 		this.setCachedValue(this.users, me.id, me, MAX_USER_CACHE_SIZE);
 	}
 
-	private async getUser(userId: string): Promise<MattermostUser> {
+	private async getMattermostUser(userId: string): Promise<MattermostUser> {
 		const cached = this.getCachedValue(this.users, userId);
 
 		if (cached) {
@@ -1101,7 +1125,7 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 			threadId = this.encodeThreadId({ channelId });
 		}
 
-		const user = await this.getUser(userId).catch(() => undefined);
+		const user = await this.getMattermostUser(userId).catch(() => undefined);
 
 		await this.chat.processAction(
 			{
@@ -1238,7 +1262,7 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 					rootPostId: reaction.post_id,
 				});
 		const [user, message] = await Promise.all([
-			this.getUser(reaction.user_id).catch(() => undefined),
+			this.getMattermostUser(reaction.user_id).catch(() => undefined),
 			post ? this.buildMessage(post) : Promise.resolve(undefined),
 		]);
 
