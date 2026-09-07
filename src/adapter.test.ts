@@ -94,12 +94,12 @@ describe("MattermostAdapter", () => {
 
 	it("accepts websocket embedded objects for edited posts", async () => {
 		const adapter = createAdapter() as MattermostAdapter & {
-			chat: { processMessage: ReturnType<typeof vi.fn> };
+			chat: { processMessageUpdated: ReturnType<typeof vi.fn> };
 			users: Map<string, MattermostUser>;
 			handleWebSocketPayload: (payload: unknown) => Promise<void>;
 		};
-		const processMessage = vi.fn();
-		adapter.chat = { processMessage };
+		const processMessageUpdated = vi.fn();
+		adapter.chat = { processMessageUpdated };
 		adapter.users.set("user-1", createUser());
 
 		await adapter.handleWebSocketPayload({
@@ -109,7 +109,7 @@ describe("MattermostAdapter", () => {
 			},
 		});
 
-		expect(processMessage).toHaveBeenCalledTimes(1);
+		expect(processMessageUpdated).toHaveBeenCalledTimes(1);
 	});
 
 	it("parses binary websocket payloads", () => {

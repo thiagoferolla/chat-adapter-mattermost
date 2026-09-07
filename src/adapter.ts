@@ -1030,7 +1030,9 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 					return;
 				}
 
-				void this.handleWebSocketPayload(payload);
+				void this.handleWebSocketPayload(payload).catch((error) => {
+					this.logger.error("Mattermost websocket event failed", error);
+				});
 			});
 
 			socket.addEventListener("error", () => {
@@ -1213,25 +1215,33 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 
 		const isMention = this.detectMention(post, payload.data?.mentions);
 
-		this.chat.processMessage(this, this.threadIdForPost(post), () =>
-			this.buildMessage(post, isMention),
-		);
+		const threadId = this.threadIdForPost(post);
+		const message = () => this.buildMessage(post, isMention);
+
+		if (payload.event === "post_edited") {
+			await this.chat.processMessageUpdated({ adapter: this, threadId, message });
+		} else {
+			await this.chat.processMessage(this, threadId, message);
+		}
 	}
 
 	private async handlePostDeletedEvent(payload: MattermostWebSocketEvent): Promise<void> {
 		const post = this.parseEmbeddedJson<MattermostPost>(payload.data?.post);
 
-		if (!post) {
+		if (!this.chat || !post) {
 			return;
 		}
 
-		this.logger.debug(
-			"Ignoring Mattermost post_deleted event; Chat SDK has no delete handler",
-			{
-				messageId: post.id,
-				threadId: this.threadIdForPost(post),
-			},
-		);
+		const threadId = this.threadIdForPost(post);
+		await this.chat.processMessageDeleted({
+			adapter: this,
+			messageId: post.id,
+			threadId,
+			channelId: this.channelIdFromThreadId(threadId),
+			deletedAt: post.delete_at > 0 ? new Date(post.delete_at) : undefined,
+			previousMessage: await this.buildMessage(post),
+			raw: payload,
+		});
 	}
 
 	private async handleReactionEvent(
