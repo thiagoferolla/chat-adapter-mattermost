@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import {
 	ConsoleLogger,
 	EmojiResolver,
@@ -116,7 +117,7 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 	}
 
 	channelIdFromThreadId(threadId: string): string {
-		return this.decodeThreadId(threadId).channelId;
+		return this.encodeThreadId({ channelId: this.decodeThreadId(threadId).channelId });
 	}
 
 	encodeThreadId(data: MattermostThreadId): string {
@@ -171,8 +172,11 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 	}
 
 	async handleWebhook(request: Request, options?: WebhookOptions): Promise<Response> {
+		if (request.method !== "POST") {
+			return new Response("Method not allowed", { status: 405, headers: { Allow: "POST" } });
+		}
 		if (!this.chat) {
-			return new Response("OK", { status: 200 });
+			return new Response("Adapter not initialized", { status: 503 });
 		}
 
 		let body: Record<string, unknown>;
@@ -180,16 +184,61 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 		try {
 			body = (await request.json()) as Record<string, unknown>;
 		} catch {
-			return new Response("OK", { status: 200 });
+			return new Response("Invalid JSON", { status: 400 });
 		}
-
+		if (!body || typeof body !== "object" || Array.isArray(body)) {
+			return new Response("Invalid callback", { status: 400 });
+		}
 		const context = body.context as Record<string, unknown> | undefined;
-
-		if (context?.action_id) {
-			await this.handleActionCallback(body, options);
+		if (
+			!this.config.callbackUrl ||
+			!this.config.callbackSecret ||
+			!context ||
+			typeof context !== "object" ||
+			Array.isArray(context) ||
+			typeof context.action_id !== "string" ||
+			!context.action_id ||
+			typeof context.channel_id !== "string" ||
+			context.channel_id !== body.channel_id ||
+			(context.action_value !== undefined && typeof context.action_value !== "string") ||
+			(context.allowed_values !== undefined &&
+				(!Array.isArray(context.allowed_values) ||
+					!context.allowed_values.every((value) => typeof value === "string"))) ||
+			typeof context.nonce !== "string" ||
+			!/^[a-f0-9]{32}$/.test(context.nonce) ||
+			typeof context.signature !== "string" ||
+			!/^[a-f0-9]{64}$/.test(context.signature) ||
+			!timingSafeEqual(
+				Buffer.from(context.signature, "hex"),
+				Buffer.from(this.signActionContext(context), "hex"),
+			)
+		) {
+			return new Response("Invalid callback authentication", { status: 401 });
+		}
+		if (
+			![body.user_id, body.post_id, body.channel_id].every(
+				(id) => typeof id === "string" && /^[a-z0-9_-]+$/i.test(id),
+			) ||
+			(context.allowed_values !== undefined
+				? typeof context.selected_option !== "string" ||
+					!(context.allowed_values as string[]).includes(context.selected_option)
+				: context.selected_option !== undefined)
+		) {
+			return new Response("Invalid callback payload", { status: 400 });
 		}
 
-		return new Response("OK", { status: 200 });
+		// Authentication context is confidential in Mattermost; do not expose it in event.raw.
+		return this.handleActionCallback(
+			{
+				...body,
+				context: {
+					action_id: context.action_id,
+					action_value: context.action_value,
+					selected_option: context.selected_option,
+				},
+			},
+			options,
+		);
 	}
 
 	parseMessage(raw: MattermostPost): Message<MattermostPost> {
@@ -226,7 +275,7 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 		channelId: string,
 		message: AdapterPostableMessage,
 	): Promise<RawMessage<MattermostPost>> {
-		const payload = await this.buildCreatePostPayload(channelId, message);
+		const payload = await this.buildCreatePostPayload(this.nativeChannelId(channelId), message);
 		const post = await this.api<MattermostPost>("/posts", {
 			method: "POST",
 			body: JSON.stringify(payload),
@@ -293,7 +342,7 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 		if (card && this.config.callbackUrl) {
 			putBody.props = {
 				...existing.props,
-				attachments: this.renderCardAttachments(card),
+				attachments: this.renderCardAttachments(card, decoded.channelId),
 			};
 		}
 
@@ -385,21 +434,93 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 		channelId: string,
 		options?: FetchOptions,
 	): Promise<FetchResult<MattermostPost>> {
-		const page = this.parsePageCursor(options?.cursor);
+		const nativeId = this.nativeChannelId(channelId);
+		const direction = options?.direction ?? "backward";
 		const limit = this.normalizeLimit(options?.limit);
-		const query = new URLSearchParams({
-			page: String(page),
-			per_page: String(limit),
-		});
-		const response = await this.api<MattermostPostsResponse>(
-			`/channels/${channelId}/posts?${query.toString()}`,
-		);
-		const posts = this.sortPosts(response);
-		const messages = await Promise.all(posts.map((post) => this.buildMessage(post)));
+		const readPage = async (page: number): Promise<MattermostPost[]> => {
+			const query = new URLSearchParams({
+				page: String(page),
+				per_page: String(MAX_CHANNEL_PAGE_SIZE),
+				skipFetchThreads: "true",
+			});
+			const response = await this.api<MattermostPostsResponse>(
+				`/channels/${nativeId}/posts?${query}`,
+			);
+			return response.order.map((id) => response.posts[id]);
+		};
+		let page = 0;
+		let index = direction === "backward" ? 0 : MAX_CHANNEL_PAGE_SIZE - 1;
+		if (options?.cursor) {
+			const cursor = this.parseJsonField<Record<string, unknown>>(
+				Buffer.from(options.cursor, "base64url").toString(),
+			);
+			if (
+				!cursor ||
+				cursor.version !== 1 ||
+				cursor.channelId !== nativeId ||
+				cursor.direction !== direction ||
+				typeof cursor.page !== "number" ||
+				!Number.isSafeInteger(cursor.page) ||
+				cursor.page < 0 ||
+				typeof cursor.index !== "number" ||
+				!Number.isInteger(cursor.index) ||
+				cursor.index < 0 ||
+				cursor.index >= MAX_CHANNEL_PAGE_SIZE
+			) {
+				throw new ValidationError(
+					ADAPTER_NAME,
+					"Invalid Mattermost channel history cursor.",
+				);
+			}
+			page = cursor.page;
+			index = cursor.index;
+		} else if (direction === "forward") {
+			// The channel API has no oldest-first switch. Locate its oldest page first.
+			while ((await readPage(page)).length === MAX_CHANNEL_PAGE_SIZE) {
+				page += 1;
+			}
+		}
+
+		const selected: MattermostPost[] = [];
+		let nextCursor: string | undefined;
+		while (page >= 0) {
+			const posts = await readPage(page);
+			if (direction === "forward") {
+				index = Math.min(index, posts.length - 1);
+			}
+			while (index >= 0 && index < posts.length) {
+				const post = posts[index];
+				if (post && !post.root_id && !post.delete_at) {
+					// Look ahead one root so reply-only pages never truncate history.
+					if (selected.length === limit) {
+						nextCursor = Buffer.from(
+							JSON.stringify({
+								version: 1,
+								channelId: nativeId,
+								direction,
+								page,
+								index,
+							}),
+						).toString("base64url");
+						break;
+					}
+					selected.push(post);
+				}
+				index += direction === "backward" ? 1 : -1;
+			}
+			if (nextCursor || (direction === "backward" && posts.length < MAX_CHANNEL_PAGE_SIZE)) {
+				break;
+			}
+			page += direction === "backward" ? 1 : -1;
+			index = direction === "backward" ? 0 : MAX_CHANNEL_PAGE_SIZE - 1;
+		}
+		if (direction === "backward") {
+			selected.reverse();
+		}
 
 		return {
-			messages,
-			nextCursor: response.has_next ? String(page + 1) : undefined,
+			messages: await Promise.all(selected.map((post) => this.buildMessage(post))),
+			nextCursor,
 		};
 	}
 
@@ -409,7 +530,7 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 
 		return {
 			id: threadId,
-			channelId: channel.id,
+			channelId: this.encodeThreadId({ channelId: channel.id }),
 			channelName: channel.display_name ?? channel.name,
 			channelVisibility: this.visibilityForChannelType(channel.type),
 			isDM: channel.type === "D",
@@ -421,10 +542,10 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 	}
 
 	async fetchChannelInfo(channelId: string): Promise<ChannelInfo> {
-		const channel = await this.getChannel(channelId);
+		const channel = await this.getChannel(this.nativeChannelId(channelId));
 
 		return {
-			id: channel.id,
+			id: this.encodeThreadId({ channelId: channel.id }),
 			isDM: channel.type === "D",
 			name: channel.display_name ?? channel.name,
 			channelVisibility: this.visibilityForChannelType(channel.type),
@@ -450,14 +571,15 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 	}
 
 	getChannelVisibility(threadId: string): ChannelVisibility {
-		const channel = this.getCachedValue(this.channels, this.channelIdFromThreadId(threadId));
+		const channel = this.getCachedValue(this.channels, this.decodeThreadId(threadId).channelId);
 
 		return this.visibilityForChannelType(channel?.type);
 	}
 
 	isDM(threadId: string): boolean {
 		return (
-			this.getCachedValue(this.channels, this.channelIdFromThreadId(threadId))?.type === "D"
+			this.getCachedValue(this.channels, this.decodeThreadId(threadId).channelId)?.type ===
+			"D"
 		);
 	}
 
@@ -542,7 +664,7 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 		if (card && this.config.callbackUrl) {
 			payload.props = {
 				...payload.props,
-				attachments: this.renderCardAttachments(card),
+				attachments: this.renderCardAttachments(card, channelId),
 			};
 		}
 
@@ -563,8 +685,20 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 		return this.converter.renderPostable(message);
 	}
 
-	private renderCardAttachments(card: CardElement): Record<string, unknown>[] {
+	private renderCardAttachments(card: CardElement, channelId: string): Record<string, unknown>[] {
 		const actions = this.extractActionsFromCard(card);
+		for (const action of actions) {
+			const integration = action.integration as { context: Record<string, unknown> };
+			const context = integration.context;
+			context.channel_id = channelId;
+			context.nonce = randomBytes(16).toString("hex");
+			if (action.type === "select") {
+				context.allowed_values = (action.options as { value: string }[]).map(
+					(option) => option.value,
+				);
+			}
+			context.signature = this.signActionContext(context);
+		}
 		const attachment: Record<string, unknown> = {};
 
 		if (card.title) {
@@ -644,7 +778,7 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 			const context: Record<string, unknown> = {
 				action_id: button.id,
 			};
-			if (button.value) {
+			if (button.value !== undefined) {
 				context.action_value = button.value;
 			}
 			action.integration = {
@@ -710,6 +844,29 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 			default:
 				return "default";
 		}
+	}
+
+	private signActionContext(context: Record<string, unknown>): string {
+		if (!this.config.callbackSecret) {
+			throw new AuthenticationError(
+				ADAPTER_NAME,
+				"Callback signing secret is not configured.",
+			);
+		}
+		return createHmac("sha256", this.config.callbackSecret)
+			.update(
+				JSON.stringify([
+					"mattermost-action-v1",
+					this.config.baseUrl,
+					this.config.callbackUrl,
+					context.channel_id,
+					context.action_id,
+					context.action_value ?? null,
+					context.allowed_values ?? null,
+					context.nonce,
+				]),
+			)
+			.digest("hex");
 	}
 
 	private async uploadFiles(
@@ -1089,9 +1246,9 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 	private async handleActionCallback(
 		body: Record<string, unknown>,
 		options?: WebhookOptions,
-	): Promise<void> {
+	): Promise<Response> {
 		if (!this.chat) {
-			return;
+			return new Response("Adapter not initialized", { status: 503 });
 		}
 
 		const rawContext = body.context;
@@ -1103,7 +1260,7 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 		const actionId = context.action_id as string;
 
 		if (!actionId) {
-			return;
+			return new Response("Invalid callback payload", { status: 400 });
 		}
 
 		const actionValue =
@@ -1113,19 +1270,18 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 		const postId = body.post_id as string;
 		const channelId = body.channel_id as string;
 
-		let threadId: string;
-
-		if (postId) {
-			const post = await this.getPost(postId).catch(() => undefined);
-
-			if (post) {
-				threadId = this.threadIdForPost(post);
-			} else {
-				threadId = this.encodeThreadId({ channelId });
-			}
-		} else {
-			threadId = this.encodeThreadId({ channelId });
+		let post: MattermostPost;
+		try {
+			post = await this.getPost(postId);
+		} catch (error) {
+			return new Response("Unable to verify callback post", {
+				status: error instanceof ResourceNotFoundError ? 404 : 502,
+			});
 		}
+		if (post.channel_id !== channelId) {
+			return new Response("Invalid callback channel", { status: 401 });
+		}
+		const threadId = this.threadIdForPost(post);
 
 		const user = await this.getMattermostUser(userId).catch(() => undefined);
 
@@ -1141,6 +1297,7 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 			},
 			options,
 		);
+		return new Response("OK", { status: 200 });
 	}
 
 	private async handleWebSocketPayload(payload: MattermostWebSocketEvent): Promise<void> {
@@ -1361,6 +1518,15 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 		if (!config.botToken) {
 			throw new ValidationError(ADAPTER_NAME, "Mattermost botToken is required.");
 		}
+		if (
+			config.callbackUrl &&
+			(!config.callbackSecret || Buffer.byteLength(config.callbackSecret) < 32)
+		) {
+			throw new ValidationError(
+				ADAPTER_NAME,
+				"callbackSecret must contain at least 32 bytes when callbackUrl is configured.",
+			);
+		}
 	}
 
 	private normalizeBaseUrl(baseUrl: string): string {
@@ -1370,11 +1536,10 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 	private apiUrl(path: string): string {
 		const url = new URL(this.config.baseUrl);
 		const basePath = url.pathname.replace(/\/$/, "");
-		const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-
-		url.pathname = `${basePath}/api/v4${normalizedPath}`;
-
-		return url.toString();
+		url.pathname = `${basePath}/api/v4/`;
+		url.search = "";
+		url.hash = "";
+		return new URL(path.replace(/^\//, ""), url).toString();
 	}
 
 	private webSocketUrl(): string {
@@ -1471,21 +1636,19 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 			return DEFAULT_FETCH_LIMIT;
 		}
 
-		return Math.min(limit, MAX_CHANNEL_PAGE_SIZE);
+		return Math.min(Math.floor(limit), MAX_CHANNEL_PAGE_SIZE);
 	}
 
-	private parsePageCursor(cursor?: string): number {
-		if (!cursor) {
-			return 0;
+	private nativeChannelId(channelId: string): string {
+		// Bare IDs remain accepted by public adapter methods for existing consumers.
+		if (!channelId.includes(":")) {
+			return channelId;
 		}
-
-		const page = Number(cursor);
-
-		if (!Number.isInteger(page) || page < 0) {
-			throw new ValidationError(ADAPTER_NAME, `Invalid Mattermost page cursor: ${cursor}`);
+		const decoded = this.decodeThreadId(channelId);
+		if (decoded.rootPostId) {
+			throw new ValidationError(ADAPTER_NAME, "Expected a channel ID, not a thread ID.");
 		}
-
-		return page;
+		return decoded.channelId;
 	}
 
 	private toBlob(data: ArrayBuffer | Blob | Buffer, mimeType?: string): Blob {
