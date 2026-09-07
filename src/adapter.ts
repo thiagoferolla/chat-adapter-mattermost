@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import {
 	ConsoleLogger,
 	EmojiResolver,
@@ -171,8 +172,11 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 	}
 
 	async handleWebhook(request: Request, options?: WebhookOptions): Promise<Response> {
+		if (request.method !== "POST") {
+			return new Response("Method not allowed", { status: 405, headers: { Allow: "POST" } });
+		}
 		if (!this.chat) {
-			return new Response("OK", { status: 200 });
+			return new Response("Adapter not initialized", { status: 503 });
 		}
 
 		let body: Record<string, unknown>;
@@ -180,16 +184,61 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 		try {
 			body = (await request.json()) as Record<string, unknown>;
 		} catch {
-			return new Response("OK", { status: 200 });
+			return new Response("Invalid JSON", { status: 400 });
 		}
-
+		if (!body || typeof body !== "object" || Array.isArray(body)) {
+			return new Response("Invalid callback", { status: 400 });
+		}
 		const context = body.context as Record<string, unknown> | undefined;
-
-		if (context?.action_id) {
-			await this.handleActionCallback(body, options);
+		if (
+			!this.config.callbackUrl ||
+			!this.config.callbackSecret ||
+			!context ||
+			typeof context !== "object" ||
+			Array.isArray(context) ||
+			typeof context.action_id !== "string" ||
+			!context.action_id ||
+			typeof context.channel_id !== "string" ||
+			context.channel_id !== body.channel_id ||
+			(context.action_value !== undefined && typeof context.action_value !== "string") ||
+			(context.allowed_values !== undefined &&
+				(!Array.isArray(context.allowed_values) ||
+					!context.allowed_values.every((value) => typeof value === "string"))) ||
+			typeof context.nonce !== "string" ||
+			!/^[a-f0-9]{32}$/.test(context.nonce) ||
+			typeof context.signature !== "string" ||
+			!/^[a-f0-9]{64}$/.test(context.signature) ||
+			!timingSafeEqual(
+				Buffer.from(context.signature, "hex"),
+				Buffer.from(this.signActionContext(context), "hex"),
+			)
+		) {
+			return new Response("Invalid callback authentication", { status: 401 });
+		}
+		if (
+			![body.user_id, body.post_id, body.channel_id].every(
+				(id) => typeof id === "string" && /^[a-z0-9_-]+$/i.test(id),
+			) ||
+			(context.allowed_values !== undefined
+				? typeof context.selected_option !== "string" ||
+					!(context.allowed_values as string[]).includes(context.selected_option)
+				: context.selected_option !== undefined)
+		) {
+			return new Response("Invalid callback payload", { status: 400 });
 		}
 
-		return new Response("OK", { status: 200 });
+		// Authentication context is confidential in Mattermost; do not expose it in event.raw.
+		return this.handleActionCallback(
+			{
+				...body,
+				context: {
+					action_id: context.action_id,
+					action_value: context.action_value,
+					selected_option: context.selected_option,
+				},
+			},
+			options,
+		);
 	}
 
 	parseMessage(raw: MattermostPost): Message<MattermostPost> {
@@ -293,7 +342,7 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 		if (card && this.config.callbackUrl) {
 			putBody.props = {
 				...existing.props,
-				attachments: this.renderCardAttachments(card),
+				attachments: this.renderCardAttachments(card, decoded.channelId),
 			};
 		}
 
@@ -615,7 +664,7 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 		if (card && this.config.callbackUrl) {
 			payload.props = {
 				...payload.props,
-				attachments: this.renderCardAttachments(card),
+				attachments: this.renderCardAttachments(card, channelId),
 			};
 		}
 
@@ -636,8 +685,20 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 		return this.converter.renderPostable(message);
 	}
 
-	private renderCardAttachments(card: CardElement): Record<string, unknown>[] {
+	private renderCardAttachments(card: CardElement, channelId: string): Record<string, unknown>[] {
 		const actions = this.extractActionsFromCard(card);
+		for (const action of actions) {
+			const integration = action.integration as { context: Record<string, unknown> };
+			const context = integration.context;
+			context.channel_id = channelId;
+			context.nonce = randomBytes(16).toString("hex");
+			if (action.type === "select") {
+				context.allowed_values = (action.options as { value: string }[]).map(
+					(option) => option.value,
+				);
+			}
+			context.signature = this.signActionContext(context);
+		}
 		const attachment: Record<string, unknown> = {};
 
 		if (card.title) {
@@ -717,7 +778,7 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 			const context: Record<string, unknown> = {
 				action_id: button.id,
 			};
-			if (button.value) {
+			if (button.value !== undefined) {
 				context.action_value = button.value;
 			}
 			action.integration = {
@@ -783,6 +844,29 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 			default:
 				return "default";
 		}
+	}
+
+	private signActionContext(context: Record<string, unknown>): string {
+		if (!this.config.callbackSecret) {
+			throw new AuthenticationError(
+				ADAPTER_NAME,
+				"Callback signing secret is not configured.",
+			);
+		}
+		return createHmac("sha256", this.config.callbackSecret)
+			.update(
+				JSON.stringify([
+					"mattermost-action-v1",
+					this.config.baseUrl,
+					this.config.callbackUrl,
+					context.channel_id,
+					context.action_id,
+					context.action_value ?? null,
+					context.allowed_values ?? null,
+					context.nonce,
+				]),
+			)
+			.digest("hex");
 	}
 
 	private async uploadFiles(
@@ -1162,9 +1246,9 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 	private async handleActionCallback(
 		body: Record<string, unknown>,
 		options?: WebhookOptions,
-	): Promise<void> {
+	): Promise<Response> {
 		if (!this.chat) {
-			return;
+			return new Response("Adapter not initialized", { status: 503 });
 		}
 
 		const rawContext = body.context;
@@ -1176,7 +1260,7 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 		const actionId = context.action_id as string;
 
 		if (!actionId) {
-			return;
+			return new Response("Invalid callback payload", { status: 400 });
 		}
 
 		const actionValue =
@@ -1186,19 +1270,18 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 		const postId = body.post_id as string;
 		const channelId = body.channel_id as string;
 
-		let threadId: string;
-
-		if (postId) {
-			const post = await this.getPost(postId).catch(() => undefined);
-
-			if (post) {
-				threadId = this.threadIdForPost(post);
-			} else {
-				threadId = this.encodeThreadId({ channelId });
-			}
-		} else {
-			threadId = this.encodeThreadId({ channelId });
+		let post: MattermostPost;
+		try {
+			post = await this.getPost(postId);
+		} catch (error) {
+			return new Response("Unable to verify callback post", {
+				status: error instanceof ResourceNotFoundError ? 404 : 502,
+			});
 		}
+		if (post.channel_id !== channelId) {
+			return new Response("Invalid callback channel", { status: 401 });
+		}
+		const threadId = this.threadIdForPost(post);
 
 		const user = await this.getMattermostUser(userId).catch(() => undefined);
 
@@ -1214,6 +1297,7 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 			},
 			options,
 		);
+		return new Response("OK", { status: 200 });
 	}
 
 	private async handleWebSocketPayload(payload: MattermostWebSocketEvent): Promise<void> {
@@ -1433,6 +1517,15 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 
 		if (!config.botToken) {
 			throw new ValidationError(ADAPTER_NAME, "Mattermost botToken is required.");
+		}
+		if (
+			config.callbackUrl &&
+			(!config.callbackSecret || Buffer.byteLength(config.callbackSecret) < 32)
+		) {
+			throw new ValidationError(
+				ADAPTER_NAME,
+				"callbackSecret must contain at least 32 bytes when callbackUrl is configured.",
+			);
 		}
 	}
 

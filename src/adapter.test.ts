@@ -8,7 +8,13 @@ function createAdapter(withCallback = false) {
 		botToken: "test-token",
 		userName: "mattermost-bot",
 		callbackUrl: withCallback ? "https://bot.example.com/webhooks/mattermost" : undefined,
+		callbackSecret: withCallback ? "test-callback-secret-at-least-32-bytes" : undefined,
 	});
+}
+
+function signedContext(adapter: MattermostAdapter, context: Record<string, unknown>) {
+	const signed = { ...context, channel_id: "channel-1", nonce: "a".repeat(32) };
+	return { ...signed, signature: adapter["signActionContext"](signed) };
 }
 
 function createPost(overrides: Partial<MattermostPost> = {}): MattermostPost {
@@ -54,14 +60,14 @@ describe("MattermostAdapter", () => {
 		});
 	});
 
-	it("returns 200 from handleWebhook", async () => {
+	it("returns 503 from handleWebhook before initialization", async () => {
 		const adapter = createAdapter();
 		const response = await adapter.handleWebhook(
 			new Request("https://example.com/webhook", { method: "POST" }),
 		);
 
-		expect(response.status).toBe(200);
-		expect(await response.text()).toBe("OK");
+		expect(response.status).toBe(503);
+		expect(await response.text()).toBe("Adapter not initialized");
 	});
 
 	it("marks mentions from websocket mention payloads", async () => {
@@ -242,7 +248,7 @@ describe("MattermostAdapter actions - card rendering", () => {
 			style: "primary",
 			integration: {
 				url: "https://bot.example.com/webhooks/mattermost",
-				context: { action_id: "approve" },
+				context: expect.objectContaining({ action_id: "approve" }),
 			},
 		});
 		expect(body.props.attachments[0].actions[1]).toEqual({
@@ -252,7 +258,7 @@ describe("MattermostAdapter actions - card rendering", () => {
 			style: "danger",
 			integration: {
 				url: "https://bot.example.com/webhooks/mattermost",
-				context: { action_id: "reject" },
+				context: expect.objectContaining({ action_id: "reject" }),
 			},
 		});
 	});
@@ -310,7 +316,10 @@ describe("MattermostAdapter actions - card rendering", () => {
 			],
 			integration: {
 				url: "https://bot.example.com/webhooks/mattermost",
-				context: { action_id: "color" },
+				context: expect.objectContaining({
+					action_id: "color",
+					allowed_values: ["red", "blue"],
+				}),
 			},
 		});
 	});
@@ -363,7 +372,7 @@ describe("MattermostAdapter actions - card rendering", () => {
 			type: "button",
 			integration: {
 				url: "https://bot.example.com/webhooks/mattermost",
-				context: { action_id: "priority", action_value: "high" },
+				context: expect.objectContaining({ action_id: "priority", action_value: "high" }),
 			},
 		});
 		expect(body.props.attachments[0].actions[1]).toEqual({
@@ -372,7 +381,7 @@ describe("MattermostAdapter actions - card rendering", () => {
 			type: "button",
 			integration: {
 				url: "https://bot.example.com/webhooks/mattermost",
-				context: { action_id: "priority", action_value: "low" },
+				context: expect.objectContaining({ action_id: "priority", action_value: "low" }),
 			},
 		});
 	});
@@ -450,7 +459,7 @@ describe("MattermostAdapter actions - card rendering", () => {
 		const fetchCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
 		const body = JSON.parse(fetchCall[1].body as string);
 
-		expect(body.props.attachments[0].actions[0].integration.context).toEqual({
+		expect(body.props.attachments[0].actions[0].integration.context).toMatchObject({
 			action_id: "vote",
 			action_value: "yes",
 		});
@@ -496,9 +505,9 @@ describe("MattermostAdapter actions - webhook handling", () => {
 					post_id: "post-1",
 					channel_id: "channel-1",
 					team_id: "team-1",
-					context: {
+					context: signedContext(adapter, {
 						action_id: "approve",
-					},
+					}),
 				}),
 			}),
 		);
@@ -546,10 +555,10 @@ describe("MattermostAdapter actions - webhook handling", () => {
 					user_id: "user-1",
 					post_id: "post-2",
 					channel_id: "channel-1",
-					context: {
+					context: signedContext(adapter, {
 						action_id: "priority",
 						action_value: "high",
-					},
+					}),
 				}),
 			}),
 		);
@@ -560,7 +569,7 @@ describe("MattermostAdapter actions - webhook handling", () => {
 		expect(event.value).toBe("high");
 	});
 
-	it("ignores webhook without action_id in context", async () => {
+	it("rejects webhook without signed action context", async () => {
 		const adapter = createAdapter(true) as MattermostAdapter & {
 			chat: {
 				processAction: ReturnType<typeof vi.fn>;
@@ -581,7 +590,7 @@ describe("MattermostAdapter actions - webhook handling", () => {
 			}),
 		);
 
-		expect(response.status).toBe(200);
+		expect(response.status).toBe(401);
 		expect(processAction).not.toHaveBeenCalled();
 	});
 
@@ -600,7 +609,7 @@ describe("MattermostAdapter actions - webhook handling", () => {
 			}),
 		);
 
-		expect(response.status).toBe(200);
+		expect(response.status).toBe(400);
 	});
 });
 

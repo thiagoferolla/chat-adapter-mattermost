@@ -11,6 +11,8 @@ export interface MattermostAdapterConfig {
 	 * not the Mattermost server URL. Required for interactive buttons and selects.
 	 */
 	callbackUrl?: string;
+	/** Dedicated random secret (at least 32 bytes) for signing action context. Required with callbackUrl. */
+	callbackSecret?: string;
 	/** Optional logger used before Chat injects its own logger */
 	logger?: Logger;
 	/** Optional bot username override until /users/me resolves */
