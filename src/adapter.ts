@@ -116,7 +116,7 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 	}
 
 	channelIdFromThreadId(threadId: string): string {
-		return this.decodeThreadId(threadId).channelId;
+		return this.encodeThreadId({ channelId: this.decodeThreadId(threadId).channelId });
 	}
 
 	encodeThreadId(data: MattermostThreadId): string {
@@ -226,7 +226,7 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 		channelId: string,
 		message: AdapterPostableMessage,
 	): Promise<RawMessage<MattermostPost>> {
-		const payload = await this.buildCreatePostPayload(channelId, message);
+		const payload = await this.buildCreatePostPayload(this.nativeChannelId(channelId), message);
 		const post = await this.api<MattermostPost>("/posts", {
 			method: "POST",
 			body: JSON.stringify(payload),
@@ -385,21 +385,93 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 		channelId: string,
 		options?: FetchOptions,
 	): Promise<FetchResult<MattermostPost>> {
-		const page = this.parsePageCursor(options?.cursor);
+		const nativeId = this.nativeChannelId(channelId);
+		const direction = options?.direction ?? "backward";
 		const limit = this.normalizeLimit(options?.limit);
-		const query = new URLSearchParams({
-			page: String(page),
-			per_page: String(limit),
-		});
-		const response = await this.api<MattermostPostsResponse>(
-			`/channels/${channelId}/posts?${query.toString()}`,
-		);
-		const posts = this.sortPosts(response);
-		const messages = await Promise.all(posts.map((post) => this.buildMessage(post)));
+		const readPage = async (page: number): Promise<MattermostPost[]> => {
+			const query = new URLSearchParams({
+				page: String(page),
+				per_page: String(MAX_CHANNEL_PAGE_SIZE),
+				skipFetchThreads: "true",
+			});
+			const response = await this.api<MattermostPostsResponse>(
+				`/channels/${nativeId}/posts?${query}`,
+			);
+			return response.order.map((id) => response.posts[id]);
+		};
+		let page = 0;
+		let index = direction === "backward" ? 0 : MAX_CHANNEL_PAGE_SIZE - 1;
+		if (options?.cursor) {
+			const cursor = this.parseJsonField<Record<string, unknown>>(
+				Buffer.from(options.cursor, "base64url").toString(),
+			);
+			if (
+				!cursor ||
+				cursor.version !== 1 ||
+				cursor.channelId !== nativeId ||
+				cursor.direction !== direction ||
+				typeof cursor.page !== "number" ||
+				!Number.isSafeInteger(cursor.page) ||
+				cursor.page < 0 ||
+				typeof cursor.index !== "number" ||
+				!Number.isInteger(cursor.index) ||
+				cursor.index < 0 ||
+				cursor.index >= MAX_CHANNEL_PAGE_SIZE
+			) {
+				throw new ValidationError(
+					ADAPTER_NAME,
+					"Invalid Mattermost channel history cursor.",
+				);
+			}
+			page = cursor.page;
+			index = cursor.index;
+		} else if (direction === "forward") {
+			// The channel API has no oldest-first switch. Locate its oldest page first.
+			while ((await readPage(page)).length === MAX_CHANNEL_PAGE_SIZE) {
+				page += 1;
+			}
+		}
+
+		const selected: MattermostPost[] = [];
+		let nextCursor: string | undefined;
+		while (page >= 0) {
+			const posts = await readPage(page);
+			if (direction === "forward") {
+				index = Math.min(index, posts.length - 1);
+			}
+			while (index >= 0 && index < posts.length) {
+				const post = posts[index];
+				if (post && !post.root_id && !post.delete_at) {
+					// Look ahead one root so reply-only pages never truncate history.
+					if (selected.length === limit) {
+						nextCursor = Buffer.from(
+							JSON.stringify({
+								version: 1,
+								channelId: nativeId,
+								direction,
+								page,
+								index,
+							}),
+						).toString("base64url");
+						break;
+					}
+					selected.push(post);
+				}
+				index += direction === "backward" ? 1 : -1;
+			}
+			if (nextCursor || (direction === "backward" && posts.length < MAX_CHANNEL_PAGE_SIZE)) {
+				break;
+			}
+			page += direction === "backward" ? 1 : -1;
+			index = direction === "backward" ? 0 : MAX_CHANNEL_PAGE_SIZE - 1;
+		}
+		if (direction === "backward") {
+			selected.reverse();
+		}
 
 		return {
-			messages,
-			nextCursor: response.has_next ? String(page + 1) : undefined,
+			messages: await Promise.all(selected.map((post) => this.buildMessage(post))),
+			nextCursor,
 		};
 	}
 
@@ -409,7 +481,7 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 
 		return {
 			id: threadId,
-			channelId: channel.id,
+			channelId: this.encodeThreadId({ channelId: channel.id }),
 			channelName: channel.display_name ?? channel.name,
 			channelVisibility: this.visibilityForChannelType(channel.type),
 			isDM: channel.type === "D",
@@ -421,10 +493,10 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 	}
 
 	async fetchChannelInfo(channelId: string): Promise<ChannelInfo> {
-		const channel = await this.getChannel(channelId);
+		const channel = await this.getChannel(this.nativeChannelId(channelId));
 
 		return {
-			id: channel.id,
+			id: this.encodeThreadId({ channelId: channel.id }),
 			isDM: channel.type === "D",
 			name: channel.display_name ?? channel.name,
 			channelVisibility: this.visibilityForChannelType(channel.type),
@@ -450,14 +522,15 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 	}
 
 	getChannelVisibility(threadId: string): ChannelVisibility {
-		const channel = this.getCachedValue(this.channels, this.channelIdFromThreadId(threadId));
+		const channel = this.getCachedValue(this.channels, this.decodeThreadId(threadId).channelId);
 
 		return this.visibilityForChannelType(channel?.type);
 	}
 
 	isDM(threadId: string): boolean {
 		return (
-			this.getCachedValue(this.channels, this.channelIdFromThreadId(threadId))?.type === "D"
+			this.getCachedValue(this.channels, this.decodeThreadId(threadId).channelId)?.type ===
+			"D"
 		);
 	}
 
@@ -1370,11 +1443,10 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 	private apiUrl(path: string): string {
 		const url = new URL(this.config.baseUrl);
 		const basePath = url.pathname.replace(/\/$/, "");
-		const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-
-		url.pathname = `${basePath}/api/v4${normalizedPath}`;
-
-		return url.toString();
+		url.pathname = `${basePath}/api/v4/`;
+		url.search = "";
+		url.hash = "";
+		return new URL(path.replace(/^\//, ""), url).toString();
 	}
 
 	private webSocketUrl(): string {
@@ -1471,21 +1543,19 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 			return DEFAULT_FETCH_LIMIT;
 		}
 
-		return Math.min(limit, MAX_CHANNEL_PAGE_SIZE);
+		return Math.min(Math.floor(limit), MAX_CHANNEL_PAGE_SIZE);
 	}
 
-	private parsePageCursor(cursor?: string): number {
-		if (!cursor) {
-			return 0;
+	private nativeChannelId(channelId: string): string {
+		// Bare IDs remain accepted by public adapter methods for existing consumers.
+		if (!channelId.includes(":")) {
+			return channelId;
 		}
-
-		const page = Number(cursor);
-
-		if (!Number.isInteger(page) || page < 0) {
-			throw new ValidationError(ADAPTER_NAME, `Invalid Mattermost page cursor: ${cursor}`);
+		const decoded = this.decodeThreadId(channelId);
+		if (decoded.rootPostId) {
+			throw new ValidationError(ADAPTER_NAME, "Expected a channel ID, not a thread ID.");
 		}
-
-		return page;
+		return decoded.channelId;
 	}
 
 	private toBlob(data: ArrayBuffer | Blob | Buffer, mimeType?: string): Blob {

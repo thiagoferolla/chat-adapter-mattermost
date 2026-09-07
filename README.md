@@ -85,6 +85,8 @@ const adapter = createMattermostAdapter();
 
 - The adapter connects to Mattermost over the REST API v4 and the `/api/v4/websocket` gateway.
 - Thread IDs are encoded as `mattermost:<base64url(channelId)>` for channel-level contexts or `mattermost:<base64url(channelId)>:<base64url(rootPostId)>` for threaded replies.
+- SDK channel IDs use `mattermost:<base64url(channelId)>`, including those returned by thread/channel metadata. Use these qualified IDs with `bot.channel()` and `bot.history.channel`. Public adapter channel methods still accept bare Mattermost IDs for existing integrations; thread IDs are unchanged.
+- Channel history excludes replies and supports forward/backward cursors, with each page returned oldest-first. The first forward request scans to the oldest server page; large channels may require many requests. Cursors are opaque and scoped to the channel and direction; restart pagination without a cursor when upgrading from the old numeric cursors. Mattermost's numbered pages are not snapshots, so concurrent posts/deletions can shift results between requests.
 - User and channel data are cached in-memory with LRU eviction (up to 1000 entries each).
 - WebSocket reconnection uses exponential backoff with jitter (1 s base, 30 s max).
 - This is a community adapter. The `@chat-adapter/*` npm scope is reserved for official adapters; this package is published as `chat-adapter-mattermost`.
