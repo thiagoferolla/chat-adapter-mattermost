@@ -1,5 +1,23 @@
 # Changelog
 
+## 2.0.0
+
+### Major Changes
+
+- [#37](https://github.com/thiagoferolla/chat-adapter-mattermost/pull/37) [`1a3f19d`](https://github.com/thiagoferolla/chat-adapter-mattermost/commit/1a3f19da4fba2b38edf4a9b1fc57041c7d3a5e1f) Thanks [@thiagoferolla](https://github.com/thiagoferolla)! - Require a dedicated callbackSecret (or MATTERMOST_CALLBACK_SECRET through the factory) of at least 32 bytes when callbackUrl is configured. Sign confidential Mattermost action context with HMAC-SHA-256, validate channel bindings and select values before dispatch, and strip authentication fields from action events. Unsigned callbacks are rejected: repost or edit existing interactive cards after upgrading, and after rotating the secret or changing the server/callback URL. Non-interactive configurations are unchanged.
+
+    Correct the quick-start example to configure a state adapter and register handlers before connecting, and document authenticated callback setup and its replay/authorization boundaries.
+
+    Fail closed when the callback post cannot be fetched or belongs to another channel. Interactive callbacks from ephemeral posts are not supported because their message targets cannot be verified; native ephemeral posting is unchanged.
+
+### Minor Changes
+
+- [#38](https://github.com/thiagoferolla/chat-adapter-mattermost/pull/38) [`6ca8e21`](https://github.com/thiagoferolla/chat-adapter-mattermost/commit/6ca8e2126c94b4574d153f0a6f15426a63192f5b) Thanks [@thiagoferolla](https://github.com/thiagoferolla)! - Require Chat SDK 4.40.0 or newer and dispatch Mattermost edits and deletions through the dedicated message lifecycle handlers instead of treating edits as new messages or ignoring deletes.
+
+### Patch Changes
+
+- [#36](https://github.com/thiagoferolla/chat-adapter-mattermost/pull/36) [`5c43b8d`](https://github.com/thiagoferolla/chat-adapter-mattermost/commit/5c43b8dd751237d0586d1b4aec83a7dcaf8d2fed) Thanks [@thiagoferolla](https://github.com/thiagoferolla)! - Return SDK-qualified channel IDs while continuing to accept native IDs in public channel methods. Fix channel-history query URLs, exclude replies, and support chronological forward/backward pagination without relying on Mattermost's optional has_next flag.
+
 ## 1.1.3
 
 ### Patch Changes
