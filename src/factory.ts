@@ -26,5 +26,6 @@ export function createMattermostAdapter(
 		...config,
 		baseUrl,
 		botToken,
+		callbackSecret: config?.callbackSecret ?? process.env.MATTERMOST_CALLBACK_SECRET,
 	});
 }
