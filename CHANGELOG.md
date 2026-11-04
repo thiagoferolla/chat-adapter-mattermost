@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.0
+
+### Minor Changes
+
+- [#41](https://github.com/thiagoferolla/chat-adapter-mattermost/pull/41) [`351c608`](https://github.com/thiagoferolla/chat-adapter-mattermost/commit/351c6084974eed3e933d20950128c578b068ef3b) Thanks [@thiagoferolla](https://github.com/thiagoferolla)! - Update to Chat SDK 4.44. The `chat` peer dependency is now `^4.44.0`.
+    - Build incoming and fetched messages with `parseIncoming()`, so very long or pathological posts keep their content in `text` without slow or failing markdown parsing.
+    - Report `isMention` as `undefined` instead of `false` when the bot isn't mentioned, so the SDK's text-based mention detection still applies under the 4.41 `isMention` contract.
+
 ## 2.0.0
 
 ### Major Changes
