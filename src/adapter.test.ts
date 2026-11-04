@@ -98,6 +98,41 @@ describe("MattermostAdapter", () => {
 		expect(message.isMention).toBe(true);
 	});
 
+	it("leaves isMention undetermined when no mention is found", async () => {
+		const adapter = createAdapter() as MattermostAdapter & {
+			chat: { processMessage: ReturnType<typeof vi.fn> };
+			botUserId: string;
+			users: Map<string, MattermostUser>;
+			handlePostedEvent: (payload: unknown) => Promise<void>;
+		};
+		const processMessage = vi.fn();
+		adapter.chat = { processMessage };
+		adapter.botUserId = "bot-user";
+		adapter.users.set("user-1", createUser());
+
+		await adapter.handlePostedEvent({
+			data: { post: JSON.stringify(createPost()) },
+		});
+
+		const messageFactory = processMessage.mock.calls[0][2] as () => Promise<{
+			isMention?: boolean;
+		}>;
+		const message = await messageFactory();
+
+		expect(message.isMention).toBeUndefined();
+	});
+
+	it("keeps oversized incoming text verbatim without parsing markdown", () => {
+		const adapter = createAdapter();
+		const text = `**bold** ${"a".repeat(20_000)}`;
+		const message = adapter.parseMessage(createPost({ message: text }));
+
+		expect(message.text).toBe(text);
+		expect(message.formatted.children).toEqual([
+			{ type: "paragraph", children: [{ type: "text", value: text }] },
+		]);
+	});
+
 	it("accepts websocket embedded objects for edited posts", async () => {
 		const adapter = createAdapter() as MattermostAdapter & {
 			chat: { processMessageUpdated: ReturnType<typeof vi.fn> };

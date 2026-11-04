@@ -624,11 +624,13 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 		user?: MattermostUser,
 		isMention?: boolean,
 	): Message<MattermostPost> {
+		const { text, formatted } = this.converter.parseIncoming(post.message ?? "");
+
 		return new Message({
 			id: post.id,
 			threadId: this.threadIdForPost(post),
-			text: post.message ?? "",
-			formatted: this.converter.toAst(post.message ?? ""),
+			text,
+			formatted,
 			raw: post,
 			author: this.authorFromUser(user, post.user_id),
 			isMention,
@@ -940,12 +942,15 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 		};
 	}
 
-	private detectMention(post: MattermostPost, mentions?: unknown): boolean {
+	// Returns undefined instead of false when no mention is found: Mattermost only
+	// sends mention data when there are mentions, so absence isn't definitive and
+	// the SDK should still be allowed to detect mentions from the text.
+	private detectMention(post: MattermostPost, mentions?: unknown): true | undefined {
 		const botUserId = this.botUserId;
 		const botUserName = this.userName;
 
 		if (!botUserId && !botUserName) {
-			return false;
+			return undefined;
 		}
 
 		const mentionTokens = new Set<string>([
@@ -966,12 +971,14 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 		}
 
 		if (!botUserName) {
-			return false;
+			return undefined;
 		}
 
 		const escapedUserName = this.escapeRegex(botUserName);
 
-		return new RegExp(`(^|\\s)@${escapedUserName}\\b`, "i").test(post.message ?? "");
+		return new RegExp(`(^|\\s)@${escapedUserName}\\b`, "i").test(post.message ?? "")
+			? true
+			: undefined;
 	}
 
 	private extractMentionTokens(value: unknown): string[] {
