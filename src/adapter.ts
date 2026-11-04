@@ -61,6 +61,10 @@ const MAX_CHANNEL_PAGE_SIZE = 200;
 const MAX_USER_CACHE_SIZE = 1000;
 const MAX_CHANNEL_CACHE_SIZE = 1000;
 
+function asString(value: unknown): string | undefined {
+	return typeof value === "string" ? value : undefined;
+}
+
 export class MattermostAdapter implements Adapter<MattermostThreadId, MattermostPost> {
 	readonly lockScope = "thread" as const;
 	readonly name = ADAPTER_NAME;
@@ -173,9 +177,18 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 
 	async handleWebhook(request: Request, options?: WebhookOptions): Promise<Response> {
 		if (request.method !== "POST") {
+			this.logger.warn("Mattermost webhook rejected", {
+				method: request.method,
+				reason: "method_not_allowed",
+				status: 405,
+			});
 			return new Response("Method not allowed", { status: 405, headers: { Allow: "POST" } });
 		}
 		if (!this.chat) {
+			this.logger.warn("Mattermost webhook rejected", {
+				reason: "adapter_not_initialized",
+				status: 503,
+			});
 			return new Response("Adapter not initialized", { status: 503 });
 		}
 
@@ -184,9 +197,17 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 		try {
 			body = (await request.json()) as Record<string, unknown>;
 		} catch {
+			this.logger.warn("Mattermost webhook rejected", {
+				reason: "invalid_json",
+				status: 400,
+			});
 			return new Response("Invalid JSON", { status: 400 });
 		}
 		if (!body || typeof body !== "object" || Array.isArray(body)) {
+			this.logger.warn("Mattermost webhook rejected", {
+				reason: "invalid_body",
+				status: 400,
+			});
 			return new Response("Invalid callback", { status: 400 });
 		}
 		const context = body.context as Record<string, unknown> | undefined;
@@ -213,6 +234,14 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 				Buffer.from(this.signActionContext(context), "hex"),
 			)
 		) {
+			this.logger.warn("Mattermost webhook rejected", {
+				actionId: asString(context?.action_id),
+				channelId: asString(body.channel_id),
+				postId: asString(body.post_id),
+				reason: "invalid_callback_authentication",
+				status: 401,
+				userId: asString(body.user_id),
+			});
 			return new Response("Invalid callback authentication", { status: 401 });
 		}
 		if (
@@ -224,6 +253,14 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 					!(context.allowed_values as string[]).includes(context.selected_option)
 				: context.selected_option !== undefined)
 		) {
+			this.logger.warn("Mattermost webhook rejected", {
+				actionId: asString(context.action_id),
+				channelId: asString(body.channel_id),
+				postId: asString(body.post_id),
+				reason: "invalid_callback_payload",
+				status: 400,
+				userId: asString(body.user_id),
+			});
 			return new Response("Invalid callback payload", { status: 400 });
 		}
 
@@ -1195,7 +1232,11 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 				}
 
 				void this.handleWebSocketPayload(payload).catch((error) => {
-					this.logger.error("Mattermost websocket event failed", error);
+					this.logger.error(
+						"Mattermost websocket event failed",
+						{ event: payload.event, seq: payload.seq },
+						error,
+					);
 				});
 			});
 
@@ -1281,11 +1322,24 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 		try {
 			post = await this.getPost(postId);
 		} catch (error) {
+			const status = error instanceof ResourceNotFoundError ? 404 : 502;
+			this.logger.error(
+				"Mattermost action callback post verification failed",
+				{ channelId, postId, status, userId },
+				error,
+			);
 			return new Response("Unable to verify callback post", {
-				status: error instanceof ResourceNotFoundError ? 404 : 502,
+				status,
 			});
 		}
 		if (post.channel_id !== channelId) {
+			this.logger.warn("Mattermost action callback rejected", {
+				channelId,
+				postChannelId: post.channel_id,
+				postId,
+				reason: "channel_mismatch",
+				userId,
+			});
 			return new Response("Invalid callback channel", { status: 401 });
 		}
 		const threadId = this.threadIdForPost(post);
@@ -1305,6 +1359,14 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 			options,
 		);
 		return new Response("OK", { status: 200 });
+	}
+
+	private logIgnoredWebSocketEvent(payload: MattermostWebSocketEvent, reason: string): void {
+		this.logger.warn("Mattermost websocket event ignored", {
+			event: payload.event,
+			reason,
+			seq: payload.seq,
+		});
 	}
 
 	private async handleWebSocketPayload(payload: MattermostWebSocketEvent): Promise<void> {
@@ -1335,12 +1397,18 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 		const rawPost = payload.data?.post;
 
 		if (!rawPost) {
+			this.logIgnoredWebSocketEvent(payload, "missing_post");
 			return;
 		}
 
 		const post = this.parseEmbeddedJson<MattermostPost>(rawPost);
 
-		if (!post || post.delete_at > 0 || post.type.startsWith("system_")) {
+		if (!post) {
+			this.logIgnoredWebSocketEvent(payload, "unparsable_post");
+			return;
+		}
+
+		if (post.delete_at > 0 || post.type.startsWith("system_")) {
 			return;
 		}
 
@@ -1392,7 +1460,12 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 	private async handlePostDeletedEvent(payload: MattermostWebSocketEvent): Promise<void> {
 		const post = this.parseEmbeddedJson<MattermostPost>(payload.data?.post);
 
-		if (!this.chat || !post) {
+		if (!this.chat) {
+			return;
+		}
+
+		if (!post) {
+			this.logIgnoredWebSocketEvent(payload, "unparsable_post");
 			return;
 		}
 
@@ -1419,12 +1492,14 @@ export class MattermostAdapter implements Adapter<MattermostThreadId, Mattermost
 		const rawReaction = payload.data?.reaction;
 
 		if (!rawReaction) {
+			this.logIgnoredWebSocketEvent(payload, "missing_reaction");
 			return;
 		}
 
 		const reaction = this.parseEmbeddedJson<MattermostReaction>(rawReaction);
 
 		if (!reaction) {
+			this.logIgnoredWebSocketEvent(payload, "unparsable_reaction");
 			return;
 		}
 
